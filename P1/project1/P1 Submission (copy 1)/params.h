@@ -1,0 +1,15 @@
+#ifndef PARAMS_H
+#define PARAMS_H
+
+#define PET_INTERVAL_US 2000
+
+#define NUM_CATS 7
+#define NUM_DOGS 6
+#define NUM_BIRDS 2
+#define NUM_MICE 5
+#define NUM_WOLVES 2
+
+#define SIM_LEN_US 10000000
+#define SIM_STEP_US 500000
+
+#endif

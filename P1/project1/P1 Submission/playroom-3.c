@@ -1,0 +1,308 @@
+#include <stdio.h>
+#include <string.h>
+#include <errno.h>
+#include <pthread.h>
+
+#include "params.h"
+
+#include "playroom.h"
+
+int i = 0;
+
+// Initialization and destruction functions
+int playroom_init(struct playroom *room)
+{
+   int rv;
+   int pid;
+
+   // Zero everything by default
+   memset(room, 0, sizeof *room);
+
+   // Initialize the mutex and conditionals
+   pthread_mutex_init(&room->animalLock, NULL);
+   pthread_cond_init(&room->allowCats, NULL);
+   pthread_cond_init(&room->allowDogs, NULL);
+   pthread_cond_init(&room->allowBirbs, NULL);
+   pthread_cond_init(&room->allowMice, NULL);
+   pthread_cond_init(&room->allowWolves, NULL);
+
+   rv = pthread_mutex_init(&room->lock, NULL);
+   if (rv)
+	   return rv;
+
+   return 0;
+}
+
+void playroom_destroy(struct playroom *room)
+{
+   print_uselessWakeups(room);
+   while (pthread_mutex_destroy(&room->lock) == EBUSY);
+   pthread_mutex_destroy(&room->animalLock);
+   pthread_cond_destroy(&room->allowDogs);
+   pthread_cond_destroy(&room->allowCats);
+   pthread_cond_destroy(&room->allowMice);
+   pthread_cond_destroy(&room->allowBirbs);
+   pthread_cond_destroy(&room->allowWolves);
+}
+
+void controller(struct playroom *room) 
+{
+  int array[5] = {room->dogs.wait,
+		  room->cats.wait,
+		  room->birds.wait,
+		  room->mice.wait,
+		  room->wolves.wait};
+  int max;
+  int maxAnim;
+  int i;
+  max = -1;
+  for (i = 0; i < 5; i++) {
+    if (array[i] > max) {
+      max = array[i];
+      maxAnim = i;
+    }
+  }
+
+  if (max !=0 && room->dogs.n < 1 && room->cats.n < 1 && room->mice.n < 1 && room->birds.n < 1 && room->wolves.n < 1) {
+    switch(maxAnim) {
+    case 0:
+      pthread_cond_signal(&room->allowDogs);
+      pthread_cond_signal(&room->allowBirbs);
+      break;
+    case 1:
+      pthread_cond_signal(&room->allowCats);
+      break;
+    case 2:
+      pthread_cond_signal(&room->allowBirbs);
+      if (room->dogs.wait > room->mice.wait)
+	pthread_cond_signal(&room->allowDogs);
+      else
+	pthread_cond_signal(&room->allowMice);
+      break;
+    case 3:
+      pthread_cond_signal(&room->allowMice);
+      pthread_cond_signal(&room->allowBirbs);
+      break;
+    case 4:
+      if (room->wolves.n < 1)
+	pthread_cond_signal(&room->allowWolves);
+      break;
+    }
+  }
+}
+
+
+// Entry/exit functions
+void cat_enter(struct playroom *room)
+{
+  pthread_mutex_lock(&room->animalLock);
+  room->cats.wait++;
+  while(room->dogs.n > 0 || room->birds.n > 0 || room->mice.n > 0 || room->wolves.n > 0) {
+    pthread_cond_wait(&room->allowCats, &room->animalLock);
+    if (room->dogs.n > 0 || room->birds.n > 0 || room->mice.n > 0 || room->wolves.n > 0)
+      room->cats.wakeup++;
+      }
+  pthread_cond_signal(&room->allowCats);
+  room->cats.wait--;
+  room->cats.n++;
+  room->cats.total++;
+  pthread_mutex_unlock(&room->animalLock);
+}
+
+void cat_exit(struct playroom *room)
+{
+  pthread_mutex_lock(&room->animalLock);
+  room->cats.n--;
+  if (room->cats.n < 1)
+    controller(room);
+  pthread_mutex_unlock(&room->animalLock);
+}
+
+void dog_enter(struct playroom *room)
+{
+  pthread_mutex_lock(&room->animalLock);
+  room->dogs.wait++;
+  while(room->cats.n > 0 || room->mice.n > 0 || room->wolves.n > 0) {
+    pthread_cond_wait(&room->allowDogs, &room->animalLock);
+    if(room->cats.n > 0 || room->mice.n > 0 || room->wolves.n > 0)
+      room->dogs.wakeup++;
+      }
+  pthread_cond_signal(&room->allowDogs);
+  pthread_cond_signal(&room->allowBirbs);
+  room->dogs.wait--;
+  room->dogs.n++;
+  room->dogs.total++;
+  pthread_mutex_unlock(&room->animalLock);
+}
+
+void dog_exit(struct playroom *room)
+{
+  pthread_mutex_lock(&room->animalLock);
+  room->dogs.n--;
+  if (room->dogs.n < 1 && room->birds.n < 1)
+    controller(room);
+  else if (room->dogs.n < 1 && room->birds.n >= 1)
+      pthread_cond_signal(&room->allowMice);
+  pthread_mutex_unlock(&room->animalLock);
+}
+
+void bird_enter(struct playroom *room)
+{
+  pthread_mutex_lock(&room->animalLock);
+  room->birds.wait++;
+  while(room->cats.n > 0 || room->wolves.n > 0) {
+    pthread_cond_wait(&room->allowBirbs, &room->animalLock);
+    if (room->cats.n > 0 || room->wolves.n > 0)
+      room->birds.wakeup++;
+      }
+
+  if (room->dogs.wait > room->mice.wait && room->mice.n == 0)
+    pthread_cond_signal(&room->allowDogs);
+  else if (room->dogs.wait <= room->mice.wait && room->dogs.n == 0)
+    pthread_cond_signal(&room->allowMice);
+
+  room->birds.wait--;
+  room->birds.n++;
+  room->birds.total++;
+  pthread_mutex_unlock(&room->animalLock);
+}
+
+void bird_exit(struct playroom *room)
+{
+  pthread_mutex_lock(&room->animalLock);
+  room->birds.n--;
+  if (room->birds.n < 1 && room->dogs.n < 1 && room->mice.n < 1)
+    controller(room);
+  pthread_mutex_unlock(&room->animalLock);
+}
+
+void mouse_enter(struct playroom *room)
+{
+  pthread_mutex_lock(&room->animalLock);
+  room->mice.wait++;
+  while(room->cats.n > 0 || room->dogs.n > 0 || room->wolves.n > 0) {
+    pthread_cond_wait(&room->allowMice, &room->animalLock);
+    if (room->cats.n > 0 || room->dogs.n > 0 || room->wolves.n > 0)
+      room->mice.wakeup++;
+      }
+  pthread_cond_signal(&room->allowMice);
+  pthread_cond_signal(&room->allowBirbs);
+  room->mice.wait--;
+  room->mice.n++;
+  room->mice.total++;
+  pthread_mutex_unlock(&room->animalLock);
+}
+
+void mouse_exit(struct playroom *room)
+{
+  pthread_mutex_lock(&room->animalLock);
+  room->mice.n--;
+  if (room->mice.n < 1 && room->birds.n < 1)
+    controller(room);
+  else if (room->mice.n < 1 && room->birds.n >= 1)
+    pthread_cond_signal(&room->allowMice);
+  pthread_mutex_unlock(&room->animalLock);
+}
+
+void wolf_enter(struct playroom *room)
+{
+  pthread_mutex_lock(&room->animalLock);
+  room->wolves.wait++;
+  while(room->dogs.n > 0 || room->cats.n > 0 || room->mice.n > 0 || room->birds.n > 0 || room->wolves.n > 0) {
+    pthread_cond_wait(&room->allowWolves, &room->animalLock);
+    if (room->dogs.n > 0 || room->cats.n > 0 || room->mice.n > 0 || room->birds.n > 0 || room->wolves.n > 0)
+      room->wolves.wakeup++;
+      }
+  room->wolves.wait--;
+  room->wolves.n++;
+  room->wolves.total++;
+  pthread_mutex_unlock(&room->animalLock);
+}
+
+void wolf_exit(struct playroom *room)
+{
+  pthread_mutex_lock(&room->animalLock);
+  room->wolves.n--;
+  controller(room);
+  pthread_mutex_unlock(&room->animalLock);
+}
+
+
+// Output functions
+void print_uselessWakeups(struct playroom *room)
+{
+  pthread_mutex_lock(&room->lock);
+  printf("useless wakeups: %3dc %3dd %3db %3dm %3dw\n", 
+	 room->cats.wakeup, room->dogs.wakeup, room->birds.wakeup, room->mice.wakeup, room->wolves.wakeup);
+  pthread_mutex_unlock(&room->lock);
+}
+void playroom_print(struct playroom *room)
+{
+  // Use this so we get a consistent snapshot
+  pthread_mutex_lock(&room->lock);
+  printf("play: %2dc %2dd %2db %2dm %2dw  wait: %2dc %2dd %2db %2dm %2dw  total: %2dc %2dd %2db %2dm %2dw\n",
+	 room->cats.n, room->dogs.n, room->birds.n, room->mice.n, room->wolves.n,
+	 room->cats.wait, room->dogs.wait, room->birds.wait, room->mice.wait, room->wolves.wait,
+	 room->cats.total, room->dogs.total, room->birds.total, room->mice.total, room->wolves.total);
+  pthread_mutex_unlock(&room->lock);
+}
+
+void playroom_visual(struct playroom *room)
+{
+  int i;
+
+  // Print out a one-line "visual" view of the playroom state
+  pthread_mutex_lock(&room->lock);
+  for (i = NUM_CATS; i > room->cats.wait; i--)
+    printf(" ");
+  for (; i > 0; i--)
+		printf("c");
+  printf("|");
+  for (i = 0; i < room->cats.n; i++)
+    printf("c");
+  for (; i < NUM_CATS; i++)
+    printf(" ");
+
+  for (i = NUM_DOGS; i > room->dogs.n; i--)
+    printf(" ");
+  for (; i > 0; i--)
+    printf("d");
+  printf("|");
+  for (i = 0; i < room->dogs.wait; i++)
+    printf("d");
+  for (; i < NUM_DOGS; i++)
+    printf(" ");
+
+  for (i = NUM_BIRDS; i > room->birds.n; i--)
+    printf(" ");
+  for (; i > 0; i--)
+    printf("b");
+  printf("|");
+  for (i = 0; i < room->birds.wait; i++)
+    printf("b");
+  for (; i < NUM_BIRDS; i++)
+    printf(" ");
+
+  for (i = NUM_MICE; i > room->mice.n; i--)
+    printf(" ");
+  for (; i > 0; i--)
+    printf("m");
+  printf("|");
+  for (i = 0; i < room->mice.wait; i++)
+    printf("m");
+  for (; i < NUM_MICE; i++)
+    printf(" ");
+
+  for (i = NUM_WOLVES; i > room->wolves.n; i--)
+    printf(" ");
+  for (; i > 0; i--)
+    printf("w");
+  printf("|");
+  for (i = 0; i < room->wolves.wait; i++)
+    printf("w");
+  for (; i < NUM_WOLVES; i++)
+    printf(" ");
+
+  printf("\n");
+  pthread_mutex_unlock(&room->lock);
+}
